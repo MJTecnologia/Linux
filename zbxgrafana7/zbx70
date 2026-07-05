@@ -1,91 +1,214 @@
 #!/bin/bash
+# ============================================================
 # Script de Instalação Automática: Zabbix 7.0 LTS + Grafana 11.x
 # Compatível com Ubuntu 24.04 LTS (Noble Numbat)
+# Repositório: https://github.com/MJTecnologia/Linux
+# ============================================================
 
-# Desativar prompts interativos
 pro config set apt_news=false > /dev/null 2>&1
 export NEEDRESTART_MODE=a
 export DEBIAN_FRONTEND=noninteractive
 
 apt update
-apt install -y ruby screen figlet toilet cowsay lolcat boxes curl pv vim software-properties-common build-essential -y > /dev/null 2>&1
-
+apt install -y ruby screen figlet toilet cowsay lolcat boxes > /dev/null 2>&1
 toilet -w 100 -f smmono9 "Zabbix 7.0" | lolcat
-toilet -w 100 -f smmono9 "Grafana 11" | lolcat
 toilet -w 82 -f mini "Iniciando..." | lolcat
 
 cd /tmp
 rm *deb* > /dev/null 2>&1
+apt update
+apt upgrade -y
+apt install -y linux-headers-generic build-essential module-assistant software-properties-common curl pv python3-pip vim gnupg apt-transport-https > /dev/null 2>&1
 
 # Configura Locales
 apt install -y locales > /dev/null 2>&1
 locale-gen pt_BR.UTF-8
 update-locale LANG=pt_BR.UTF-8
 
-# Instalação do MySQL Server
-apt install -y mysql-server mysql-client -y
+# MySQL Server
+apt install -y mysql-server mysql-client
 
-# Instalação do Repositório Zabbix 7.0 LTS para Ubuntu 24.04
+# Repositório Zabbix 7.0 LTS para Ubuntu 24.04
 wget https://repo.zabbix.com/zabbix/7.0/ubuntu/pool/main/z/zabbix-release/zabbix-release_7.0-1+ubuntu24.04_all.deb
 dpkg -i zabbix-release_7.0-1+ubuntu24.04_all.deb
 apt update
 
-# Instalar pacotes do Zabbix Server e Frontend Apache/PHP
 apt install -y zabbix-server-mysql zabbix-frontend-php zabbix-apache-conf zabbix-sql-scripts zabbix-agent
 
-# Configuração do Banco de Dados do Zabbix no MySQL
+clear
+toilet -w 100 -f smmono9 "Zabbix 7.0" | lolcat
+
+# SNMP para monitoramento de rede (MikroTik, switches, etc.)
+apt install -y snmp snmpd > /dev/null 2>&1
+apt install -y snmp-mibs-downloader
+mkdir -p $HOME/.snmp
+
+# Node.js 18 (para Log.io)
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Banco de Dados do Zabbix
 mysql -uroot -e "CREATE DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
 mysql -uroot -e "CREATE USER 'zabbix'@'localhost' IDENTIFIED BY '';"
 mysql -uroot -e "GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'localhost';"
 mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators = 1;"
+mysql -uroot -e "SELECT host, user FROM mysql.user;"
+mysql -uroot -e "SHOW GRANTS FOR 'zabbix'@'localhost';"
 
-figlet -w 100 -f smmono9 "BANCO ZABBIX 7.0" | lolcat
-# Importação do Schema do Zabbix 7.0
+figlet -w 100 -f smmono9 "CRIANDO BANCO DE DADOS!" | lolcat
+figlet -w 100 -f smmono9 "PODE DEMORAR!" | lolcat
+figlet -w 100 -f smmono9 "AGUARDE!" | lolcat
+
+# Importação do schema Zabbix 7.0
 zcat /usr/share/zabbix-sql-scripts/mysql/server.sql.gz | pv --progress --size `gzip -l /usr/share/zabbix-sql-scripts/mysql/server.sql.gz | sed -n 2p | awk '{print $2}'` | mysql --default-character-set=utf8mb4 -uroot zabbix
 
 mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators = 0;"
 
-# Configurar PHP Timezone para América/Sao_Paulo
+# PHP + Apache para o frontend Zabbix
 apt install -y php-mysql
 a2enconf zabbix-frontend-php
+> /var/www/html/index.html
 sed -i 's/# php_value date.timezone Europe\/Riga/php_value date.timezone America\/Sao_Paulo/g' /etc/apache2/conf-enabled/zabbix.conf
 
-# Instalação do Grafana 11.x (Repositório Oficial)
-apt install -y apt-transport-https gpg
+# Grafana 11.x (repositório oficial)
 mkdir -p /etc/apt/keyrings
 wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null
 echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee /etc/apt/sources.list.d/grafana.list
 apt update
 apt install -y grafana
 
-# Iniciar e Habilitar os Serviços
+# Iniciar serviços
 systemctl daemon-reload
 systemctl restart zabbix-server zabbix-agent apache2 grafana-server
 systemctl enable zabbix-server zabbix-agent apache2 grafana-server
 
-# Instalar Plugin do Zabbix no Grafana
+# Plugin Zabbix no Grafana
 grafana-cli plugins install alexanderzobnin-zabbix-app
+grafana-cli plugins update alexanderzobnin-zabbix-app
 systemctl restart grafana-server
 
-# Configurar o Data Source do Zabbix no Grafana via API local
-sleep 10
-curl -X POST "http://admin:admin@127.0.0.1:3000/api/datasources" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "zabbix",
-    "type": "alexanderzobnin-zabbix-datasource",
-    "access": "proxy",
-    "url": "http://localhost/zabbix/api_jsonrpc.php",
-    "jsonData": {
-      "username": "Admin",
-      "password": "zabbix"
-    },
-    "secureJsonData": {},
-    "isDefault": true
-  }' > /dev/null 2>&1
+figlet -w 100 -f smmono9 "CRIANDO SERVIDOR DE LOGS!" | lolcat
 
+# Log.io — servidor de logs em tempo real (porta 6688)
+apt install -y npm > /dev/null 2>&1
+npm install pm2 -g > /dev/null 2>&1
+npm install -g log.io > /dev/null 2>&1
+npm install -g log.io-file-input > /dev/null 2>&1
+mkdir -p ~/.log.io/inputs/ > /dev/null 2>&1
+touch ~/.log.io/inputs/file.json > /dev/null 2>&1
+touch ~/.log.io/server.json > /dev/null 2>&1
+
+cat <<'EOF' > ~/.log.io/inputs/file.json
+{
+  "messageServer": {
+    "host": "127.0.0.1",
+    "port": 6689
+  },
+  "inputs": [
+    {
+      "source": "Linux",
+      "stream": "Zabbix Server",
+      "config": {
+        "path": "/var/log/zabbix/zabbix_server.log"
+      }
+    },
+    {
+      "source": "Linux",
+      "stream": "Zabbix Agent",
+      "config": {
+        "path": "/var/log/zabbix/zabbix_agentd.log"
+      }
+    }
+  ]
+}
+EOF
+
+cat <<'EOF' > ~/.log.io/server.json
+{
+  "messageServer": {
+    "port": 6689,
+    "host": "127.0.0.1"
+  },
+  "httpServer": {
+    "port": 6688,
+    "host": "0.0.0.0"
+  },
+  "debug": false,
+  "basicAuth": {
+    "realm": "abc123xyz",
+    "users": {
+      "aluno": "logs"
+    }
+  }
+}
+EOF
+
+pm2 start log.io-server > /dev/null 2>&1
+pm2 start log.io-file-input > /dev/null 2>&1
+
+# Proteger MySQL via iptables
+iptables -A INPUT -p tcp -s localhost --dport 3306 -j ACCEPT
+iptables -A INPUT -p tcp --dport 3306 -j DROP
+
+iptables-save | grep 3306
+systemctl status mysql | grep Active
+systemctl status zabbix-server | grep Active
+systemctl status zabbix-agent | grep Active
+systemctl status grafana-server | grep Active
+
+figlet -w 100 -f smmono9 "INSTALANDO ACERVO DE MIBs!" | lolcat
+cd /usr/share/snmp/mibs
+git clone https://github.com/arturbrasil/vendors.git
+
+# Ferramentas de rede e diagnóstico
+apt install -y parallel jq curl nmap ncat dnsutils unzip snmp-mibs-downloader htop iotop nmap silversearcher-ag ngrep > /dev/null 2>&1
+snap install gotop
+
+# Configurar datasource Zabbix no Grafana via API
+clear
+cd /tmp
+sleep 15
+curl -X "POST" "http://127.0.0.1:3000/api/datasources" \
+    -H "Content-Type: application/json" \
+    --user admin:admin \
+    -d '{
+      "name": "zabbix",
+      "type": "alexanderzobnin-zabbix-datasource",
+      "access": "proxy",
+      "url": "http://localhost/zabbix/api_jsonrpc.php",
+      "jsonData": {"username": "Admin", "password": "zabbix"},
+      "isDefault": true
+    }' > /dev/null 2>&1
+
+# Aliases e configurações de histórico no bash
+systemctl enable zabbix-server zabbix-agent apache2
+systemctl enable grafana-server
+systemctl restart zabbix-server zabbix-agent apache2 grafana-server
+
+cat <<'EOF' >> ~/.bashrc
+shopt -s histappend
+HISTFILESIZE=1000000
+HISTSIZE=1000000
+HISTCONTROL=ignoreboth
+HISTIGNORE='history'
+HISTTIMEFORMAT='%F %T '
+shopt -s cmdhist
+PROMPT_COMMAND='history -a'
+
+alias getip="ip a | grep -oP '(?<=inet |addr:)(?:\d+\.){3}\d+' | grep -v 127.0.0.1"
+alias testdns="parallel -j0 --tag dig @{} ::: 208.67.222.222 208.67.220.220 8.8.8.8 8.8.4.4 | grep Query | sort -nk5"
+alias fixmibs=export MIBDIRS=$(ls -d /usr/share/snmp/mibs/vendors/*/ | xargs | tr ' ' ':')
+export MIBDIRS=$(ls -d /usr/share/snmp/mibs/vendors/*/ | xargs | tr ' ' ':')
+ls -d /usr/share/snmp/mibs/vendors/*/ | xargs -n1 echo mibdirs + >> /etc/snmp/snmp.conf
+EOF
+
+. ~/.bashrc
+
+touch /tmp/finish
 ip=`ip a | grep -oP '(?<=inet |addr:)(?:\d+\.){3}\d+' | grep -v 127.0.0.1 | head -n 1`
 clear
-echo -e "\n\tZabbix: http://$ip/zabbix \tUsuario: Admin - Senha: zabbix \n\tGrafana: http://$ip:3000 \tUsuario: admin - Senha: admin" | boxes -d spring -a hc -p h8 | lolcat
-cowsay -f tux "Instalacao concluida! No wizard do zabbix, clique em avancar em todas as etapas!" | lolcat
-toilet -w 100 -f mini "FIM." | lolcat
+echo -e "\n\tZabbix: http://$ip/zabbix \tUsuario: Admin - Senha: zabbix \n\tGrafana: http://$ip:3000 \tUsuario: admin - Senha: admin \n\tLogs: http://$ip:6688 \tUsuario: aluno - Senha: logs" | boxes -d spring -a hc -p h8 | lolcat
+cowsay -f tux "No wizard do zabbix, clique em avancar em todas etapas sem alterar nada, nem mesmo as informacoes do MYSQL!" | lolcat
+toilet -w 100 -f mini FIM. | lolcat
